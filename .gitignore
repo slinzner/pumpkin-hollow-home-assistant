@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+/build/
+*.log
+.env*
+/.storage/
+/configuration.yaml
+/secrets.yaml
+/backups/
+home-assistant_v2.db*
+*.bundle

@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Pumpkin Hollow startup regression tests</title>
+<h1>Pumpkin Hollow startup regression tests</h1>
+<pre id="results">Running…</pre>
+<div id="fixture"></div>
+<script type="module">
+  const companionModuleUrl = new URL('../packages/companion/dist/pumpkin-hollow-companion.js', import.meta.url);
+  companionModuleUrl.searchParams.set('test-run', Date.now().toString());
+  const { syncTheme, unmount } = await import(companionModuleUrl.href);
+
+  // Use real custom element upgrades and shadow roots; no mocked DOM observers.
+  window.__pumpkinHollowCompanion.stop();
+  const output = document.querySelector('#results');
+  const fixtureContainer = document.querySelector('#fixture');
+  const results = [];
+  const waitForDomUpdates = () => new Promise(resolve => setTimeout(resolve, 0));
+  function assert(value, message) {
+    if (!value) {
+      throw new Error(message);
+    }
+  }
+  const activateTheme = () => document.documentElement.style.setProperty('--pumpkin-hollow-active', '1');
+  const findShadowStyle = root => root.querySelector('#pumpkin-hollow-shadow-style');
+
+  customElements.define('hui-heading-card', class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: 'open' }).innerHTML = '<div class="content title"><h2 class="heading">Seasonal heading</h2><p>Legacy heading</p></div>';
+    }
+  });
+  customElements.define('mushroom-slider', class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: 'open' }).innerHTML = '<div class="slider-track-active"></div>';
+    }
+  });
+
+  async function runTest(name, run) {
+    unmount();
+    fixtureContainer.replaceChildren();
+    activateTheme();
+    try {
+      await run();
+      results.push('PASS ' + name);
+    } catch (error) {
+      results.push('FAIL ' + name + ': ' + error.message);
+    } finally {
+      unmount();
+    }
+    output.textContent = results.join('\n');
+  }
+
+  await runTest('cold startup discovers a custom element upgraded after initial mount', async () => {
+    const shell = document.createElement('ph-late-upgrade');
+    fixtureContainer.append(shell);
+    syncTheme();
+    customElements.define('ph-late-upgrade', class extends HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: 'open' }).innerHTML = '<hui-heading-card></hui-heading-card><mushroom-slider></mushroom-slider>';
+      }
+    });
+    await waitForDomUpdates();
+    syncTheme();
+    const heading = shell.shadowRoot.querySelector('hui-heading-card');
+    const slider = shell.shadowRoot.querySelector('mushroom-slider');
+    assert(findShadowStyle(heading.shadowRoot), 'heading stylesheet missing after upgrade');
+    assert(getComputedStyle(heading.shadowRoot.querySelector('p')).fontFamily.includes('Creepster'), 'display font missing');
+    assert(getComputedStyle(heading.shadowRoot.querySelector('.heading')).fontFamily.includes('Creepster'), 'native heading display font missing');
+    assert(getComputedStyle(slider.shadowRoot.querySelector('div'), '::after').backgroundImage.includes('.svg'), 'slider creature missing');
+    syncTheme();
+    assert(heading.shadowRoot.querySelectorAll('#pumpkin-hollow-shadow-style').length === 1, 'duplicate styles after another theme sync');
+  });
+
+  await runTest('a shadow root attached later inside an observed shadow root is discovered', async () => {
+    const shell = document.createElement('ph-late-shadow');
+    fixtureContainer.append(shell);
+    syncTheme();
+    shell.attachShadow({ mode: 'open' }).innerHTML = '<ph-nested-shadow></ph-nested-shadow>';
+    syncTheme();
+    const nested = shell.shadowRoot.querySelector('ph-nested-shadow');
+    nested.attachShadow({ mode: 'open' }).innerHTML = '<hui-heading-card></hui-heading-card>';
+    syncTheme();
+    assert(findShadowStyle(nested.shadowRoot.querySelector('hui-heading-card').shadowRoot), 'nested heading stylesheet missing');
+  });
+
+  await runTest('new dashboard nodes receive decorations while the theme remains selected', async () => {
+    syncTheme();
+    const heading = document.createElement('hui-heading-card');
+    fixtureContainer.append(heading);
+    await waitForDomUpdates();
+    assert(findShadowStyle(heading.shadowRoot), 'new heading stylesheet missing');
+  });
+
+  await runTest('the running companion automatically styles delayed roots without a theme switch', async () => {
+    // Earlier tests drive syncTheme() directly. A fresh module URL restores
+    // automatic startup so this test exercises discovery without manual calls.
+    await import(companionModuleUrl.href + '-automatic');
+    try {
+      const shell = document.createElement('ph-automatic-shadow');
+      fixtureContainer.append(shell);
+      await waitForDomUpdates();
+      shell.attachShadow({ mode: 'open' }).innerHTML = '<hui-heading-card></hui-heading-card>';
+      const heading = shell.shadowRoot.querySelector('hui-heading-card');
+      const deadline = performance.now() + 2400;
+      while (!findShadowStyle(heading.shadowRoot) && performance.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 40));
+      }
+      assert(findShadowStyle(heading.shadowRoot), 'running companion never discovered the delayed heading');
+    } finally {
+      window.__pumpkinHollowCompanion.stop();
+    }
+  });
+
+  await runTest('switching away removes styles and switching back restores them', async () => {
+    const heading = document.createElement('hui-heading-card');
+    fixtureContainer.append(heading);
+    syncTheme();
+    assert(findShadowStyle(heading.shadowRoot), 'initial style missing');
+    document.documentElement.style.removeProperty('--pumpkin-hollow-active');
+    syncTheme();
+    assert(!findShadowStyle(heading.shadowRoot), 'seasonal stylesheet survived theme switch');
+    assert(!heading.hasAttribute('data-pumpkin-motif'), 'motif survived theme switch');
+    activateTheme();
+    syncTheme();
+    assert(findShadowStyle(heading.shadowRoot), 'style did not return');
+  });
+
+  await runTest('the bundled font and creature artwork load successfully', async () => {
+    syncTheme();
+    const faces = await document.fonts.load('20px "Pumpkin Hollow Creepster"', 'Seasonal heading');
+    assert(faces.length > 0 && faces.every(face => face.status === 'loaded'), 'bundled Creepster font did not load');
+    const creature = new Image();
+    creature.src = new URL('../packages/companion/dist/assets/spider.svg', import.meta.url).href;
+    await creature.decode();
+    assert(creature.naturalWidth > 0, 'bundled creature artwork did not decode');
+  });
+
+  const passedCount = results.filter(result => result.startsWith('PASS')).length;
+  output.textContent += `\n\n${passedCount}/${results.length} passed`;
+  document.title = results.every(result => result.startsWith('PASS')) ? 'PASS — Pumpkin Hollow startup' : 'FAIL — Pumpkin Hollow startup';
+</script>
